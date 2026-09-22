@@ -31,6 +31,9 @@ module.exports = {
 
         // --- Backups ---
         COMMIT_INTERVAL: '60',
+        // Paste a GitHub token (Fine-grained: Contents = Read and write on this repo) to enable auto-push.
+        // Leave unset to keep commits local only.
+        // GITHUB_TOKEN: 'github_pat_xxxxxxxx',
         // AUTO_PUSH: 'false',             // set to keep commits local (no GitHub push)
       },
     },

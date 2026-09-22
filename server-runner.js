@@ -261,16 +261,18 @@ async function preflight() {
 // ---------------------------------------------------------------------------
 let cfg = null;
 let server = null;
+let serverRunning = false;     // single source of truth: true between spawn and exit
 let serverReady = false;
 let shuttingDown = false;
 let intentionalStop = false;   // set when we (not a crash) bring the server down
 let committing = false;
 let commitTimer = null;
+let pushWarned = false;        // so we don't spam the same push-auth warning every minute
 let recentStartTimes = [];     // crash-loop guard
 
 function status() {
   return {
-    running: !!server && server.exitCode === null && server.signalCode === null,
+    running: serverRunning,
     ready: serverReady,
     pid: server ? server.pid : null,
     jar: cfg && cfg.jar,
@@ -292,7 +294,7 @@ function sendCommand(cmd) {
 }
 
 function startServer() {
-  if (server && server.exitCode === null) { warn('Server already running.'); return; }
+  if (serverRunning) { warn('Server already running.'); return; }
   serverReady = false;
   intentionalStop = false;
   const args = [`-Xmx${XMX}`, `-Xms${XMS}`, '-jar', cfg.jar, 'nogui'];
@@ -301,6 +303,7 @@ function startServer() {
   recentStartTimes = recentStartTimes.filter((t) => Date.now() - t < 60000);
 
   server = spawn(JAVA_BIN, args, { cwd: ROOT, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+  serverRunning = true;
 
   try { process.stdin.unpipe(); } catch (_) {}
   try { process.stdin.pipe(server.stdin); } catch (_) {}
@@ -323,6 +326,7 @@ function startServer() {
   server.stderr.on('data', onChunk);
 
   server.on('exit', (code, signal) => {
+    serverRunning = false;
     serverReady = false;
     emitStatus();
     if (shuttingDown || intentionalStop) return; // handled elsewhere
@@ -343,15 +347,18 @@ function startServer() {
 
 function stopServer() {
   return new Promise((resolve) => {
-    if (!server || server.exitCode !== null) return resolve();
+    if (!serverRunning || !server) return resolve();
     intentionalStop = true;
-    const onExit = () => resolve();
-    server.once('exit', onExit);
+    const child = server;            // capture THIS instance so a stale timer can't hit a later one
+    let killer = null;
+    const onExit = () => { if (killer) clearTimeout(killer); resolve(); };
+    child.once('exit', onExit);
     sendCommand('save-all');
     sendCommand('stop');
-    setTimeout(() => {
-      if (server && server.exitCode === null) {
-        try { process.kill(-server.pid, 'SIGKILL'); } catch (_) { try { server.kill('SIGKILL'); } catch (_) {} }
+    // Force-kill only if THIS child is still alive after 30s; cancelled the moment it exits.
+    killer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch (_) { try { child.kill('SIGKILL'); } catch (_) {} }
       }
     }, 30000);
   });
@@ -367,6 +374,24 @@ async function restartServer() {
 // ---------------------------------------------------------------------------
 // Auto-commit
 // ---------------------------------------------------------------------------
+// Never let a token appear in logs.
+function sanitize(s) {
+  const t = process.env.GITHUB_TOKEN;
+  s = String(s || '');
+  return t ? s.split(t).join('***') : s;
+}
+// Build the push URL. If GITHUB_TOKEN is set and origin is an https GitHub URL,
+// inject the token so a headless box can authenticate without any git config.
+function pushUrl() {
+  const token = process.env.GITHUB_TOKEN;
+  let url;
+  try { url = git(['remote', 'get-url', GIT_REMOTE]); } catch (_) { return null; }
+  if (token && /^https:\/\/(?:[^@/]*@)?github\.com\//i.test(url)) {
+    return url.replace(/^https:\/\/(?:[^@/]*@)?github\.com\//i, `https://${token}@github.com/`);
+  }
+  return url; // SSH remote, or https without a token (will fail if it needs creds)
+}
+
 function doCommit(prefix) {
   try {
     git(['add', '-A']);
@@ -376,11 +401,23 @@ function doCommit(prefix) {
     git(['commit', '-q', '-m', `${prefix}: ${ts()} (${files} file(s))`]);
     log(`Committed ${files} changed path(s).`);
     if (cfg.pushEnabled) {
-      try { git(['push', '-u', GIT_REMOTE, cfg.branch]); log(`Pushed to ${GIT_REMOTE}/${cfg.branch}.`); }
-      catch (e) { warn(`Push failed (saved locally): ${(e.stderr || e.message || '').toString().trim()}`); }
+      try {
+        git(['push', pushUrl() || GIT_REMOTE, `HEAD:${cfg.branch}`]);
+        log(`Pushed to ${GIT_REMOTE}/${cfg.branch}.`);
+        pushWarned = false;
+      } catch (e) {
+        if (!pushWarned) {
+          pushWarned = true;
+          const msg = sanitize((e.stderr || e.message || '').toString()).trim();
+          const hint = process.env.GITHUB_TOKEN
+            ? 'Check the token has Contents:write on this repo.'
+            : 'Set GITHUB_TOKEN (a GitHub token with Contents:write) in the env to enable pushing.';
+          warn(`Push failed — commits ARE saved locally: ${msg}. ${hint} (suppressing further push warnings until one succeeds)`);
+        }
+      }
     }
   } catch (e) {
-    warn(`Commit failed: ${(e.stderr || e.message || '').toString().trim()}`);
+    warn(`Commit failed: ${sanitize((e.stderr || e.message || '').toString()).trim()}`);
   }
 }
 
