@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MC Server Panel</title>
+<style>
+  :root{
+    color-scheme: dark;
+    --bg:#0f1216; --panel:#171b21; --panel2:#1e242c; --border:#2a313b;
+    --text:#e6e9ee; --muted:#8b96a5; --accent:#3b82f6; --green:#22c55e;
+    --red:#ef4444; --amber:#f59e0b; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 16px;background:var(--panel);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5}
+  header h1{font-size:16px;margin:0;font-weight:700}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 10px;border-radius:999px;background:var(--panel2);border:1px solid var(--border);color:var(--muted)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+  .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+  .dot.off{background:var(--red)}
+  .dot.warm{background:var(--amber)}
+  .spacer{flex:1}
+  button{font:inherit;cursor:pointer;border:1px solid var(--border);background:var(--panel2);color:var(--text);padding:7px 12px;border-radius:8px}
+  button:hover{border-color:#3a4453}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button.warn{background:#3a2a12;border-color:#5a4216;color:#fbbf24}
+  button.danger{background:#3a1616;border-color:#5a1e1e;color:#fca5a5}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  main{display:grid;grid-template-columns:1.6fr 1fr;gap:14px;padding:14px;max-width:1400px;margin:0 auto}
+  @media(max-width:900px){main{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:0;padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+  #console{background:#0b0e12;font-family:var(--mono);font-size:12.5px;line-height:1.5;padding:10px 12px;height:56vh;overflow:auto;white-space:pre-wrap;word-break:break-word}
+  #console .l{color:#cdd5df}
+  #console .l.cmd{color:#7dd3fc}
+  #console .l.warn{color:#fbbf24}
+  #console .l.err{color:#fca5a5}
+  #console .l.info{color:#86efac}
+  .cmdbar{display:flex;gap:8px;padding:10px;border-top:1px solid var(--border);background:var(--panel)}
+  .cmdbar input{flex:1;font-family:var(--mono);background:#0b0e12;border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px 11px}
+  .settings{padding:12px 14px;overflow:auto;max-height:56vh}
+  .row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #20262f}
+  .row label{flex:1;font-size:13px}
+  .row .badge{font-size:10px;padding:2px 6px;border-radius:5px;border:1px solid var(--border);color:var(--muted)}
+  .row .badge.live{color:#86efac;border-color:#245c37}
+  .row input[type=text],.row input[type=number],.row select{background:#0b0e12;border:1px solid var(--border);color:var(--text);border-radius:7px;padding:6px 8px;min-width:120px}
+  .row input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent)}
+  .grpactions{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--border);flex-wrap:wrap}
+  .hint{color:var(--muted);font-size:12px;padding:0 14px 12px}
+  .tabbtn{background:none;border:0;color:var(--muted);padding:8px 4px;margin-right:12px;border-bottom:2px solid transparent}
+  .tabbtn.active{color:var(--text);border-bottom-color:var(--accent)}
+  .tabs{display:flex;padding:0 14px;border-bottom:1px solid var(--border)}
+  .tabpane{display:none}.tabpane.active{display:block}
+  .toast{position:fixed;bottom:16px;right:16px;background:var(--panel2);border:1px solid var(--border);padding:10px 14px;border-radius:10px;font-size:13px;opacity:0;transition:.2s;pointer-events:none}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <h1>⛏️ Server Panel</h1>
+  <span class="pill"><span class="dot" id="d-run"></span><span id="s-run">…</span></span>
+  <span class="pill">PID <b id="s-pid">–</b></span>
+  <span class="pill">branch <b id="s-branch">–</b></span>
+  <span class="pill">backup <b id="s-commit">–</b>s</span>
+  <span class="spacer"></span>
+  <button class="primary" id="b-start">Start</button>
+  <button class="warn" id="b-restart">Restart</button>
+  <button class="danger" id="b-stop">Stop</button>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Live Console
+      <span class="spacer" style="flex:1"></span>
+      <label style="font-size:11px;text-transform:none;color:var(--muted);display:flex;gap:5px;align-items:center">
+        <input type="checkbox" id="autoscroll" checked> autoscroll</label>
+    </h2>
+    <div id="console"></div>
+    <div class="cmdbar">
+      <input id="cmd" placeholder="Type a server command (e.g. say hello, op &lt;player&gt;, time set day) …" autocomplete="off">
+      <button class="primary" id="b-send">Send</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="tabs">
+      <button class="tabbtn active" data-tab="props">server.properties</button>
+      <button class="tabbtn" data-tab="rules">Gamerules</button>
+    </div>
+
+    <div class="tabpane active" id="tab-props">
+      <div class="settings" id="props"></div>
+      <div class="grpactions">
+        <button class="primary" id="b-save">Save changes</button>
+        <button class="warn" id="b-save-restart">Save &amp; Restart</button>
+        <button id="b-reload">Reload</button>
+      </div>
+      <div class="hint"><b>live</b> = applied to the running server instantly. Everything else takes effect after a restart.</div>
+    </div>
+
+    <div class="tabpane" id="tab-rules">
+      <div class="settings" id="rules"></div>
+      <div class="hint">Gamerules apply to the running world immediately.</div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const consoleEl = $('#console');
+let orig = {};   // original property values
+let liveKeys = [];
+
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2200); }
+
+function addLine(text){
+  const div=document.createElement('div');
+  let cls='l';
+  if(text.startsWith('> ')) cls+=' cmd';
+  else if(/\bWARN\b/.test(text)) cls+=' warn';
+  else if(/\bERROR\b|Exception/.test(text)) cls+=' err';
+  else if(/\bINFO\b.*Done \(|runner\]/.test(text)) cls+=' info';
+  div.className=cls; div.textContent=text;
+  consoleEl.appendChild(div);
+  while(consoleEl.childNodes.length>1500) consoleEl.removeChild(consoleEl.firstChild);
+  if($('#autoscroll').checked) consoleEl.scrollTop=consoleEl.scrollHeight;
+}
+
+function applyStatus(st){
+  const run=st.running;
+  $('#d-run').className='dot '+(run?(st.ready?'on':'warm'):'off');
+  $('#s-run').textContent=run?(st.ready?'running':'starting…'):'stopped';
+  $('#s-pid').textContent=st.pid||'–';
+  $('#s-branch').textContent=st.branch||'–';
+  $('#s-commit').textContent=st.commitIntervalSec||'–';
+  $('#b-start').disabled=run; $('#b-stop').disabled=!run; $('#b-restart').disabled=!run;
+}
+
+// --- SSE realtime stream ---
+function connect(){
+  const es=new EventSource('/api/stream');
+  es.addEventListener('log',(e)=>addLine(e.data.replace(/\\n/g,'\n')));
+  es.addEventListener('status',(e)=>{ try{applyStatus(JSON.parse(e.data))}catch(_){} });
+  es.onerror=()=>{ /* browser auto-reconnects */ };
+}
+connect();
+
+// --- commands ---
+async function sendCmd(){
+  const inp=$('#cmd'); const cmd=inp.value.trim(); if(!cmd) return;
+  inp.value='';
+  const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})});
+  if(!r.ok){ const j=await r.json().catch(()=>({})); toast(j.error||'command failed'); }
+}
+$('#b-send').onclick=sendCmd;
+$('#cmd').addEventListener('keydown',(e)=>{ if(e.key==='Enter') sendCmd(); });
+
+// --- controls ---
+async function control(action){
+  await fetch('/api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
+  toast(action+' sent');
+}
+$('#b-start').onclick=()=>control('start');
+$('#b-stop').onclick=()=>{ if(confirm('Stop the server?')) control('stop'); };
+$('#b-restart').onclick=()=>{ if(confirm('Restart the server?')) control('restart'); };
+
+// --- tabs ---
+document.querySelectorAll('.tabbtn').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.tabbtn').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.tabpane').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active'); $('#tab-'+b.dataset.tab).classList.add('active');
+});
+
+// --- properties editor ---
+const ENUMS={ difficulty:['peaceful','easy','normal','hard'], gamemode:['survival','creative','adventure','spectator'] };
+function fieldFor(key,val){
+  if(ENUMS[key]){
+    const sel=document.createElement('select');
+    ENUMS[key].forEach(o=>{ const op=document.createElement('option'); op.value=o; op.textContent=o; if(o===val)op.selected=true; sel.appendChild(op); });
+    return sel;
+  }
+  if(val==='true'||val==='false'){
+    const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=val==='true';
+    cb.dataset.bool='1'; return cb;
+  }
+  const inp=document.createElement('input');
+  inp.type=/^-?\d+$/.test(val)?'number':'text'; inp.value=val; return inp;
+}
+function valOf(el){ return el.dataset.bool ? String(el.checked) : String(el.value); }
+
+async function loadProps(){
+  const r=await fetch('/api/properties'); const j=await r.json();
+  orig=j.properties||{}; liveKeys=j.live||[];
+  const box=$('#props'); box.innerHTML='';
+  Object.keys(orig).sort().forEach(key=>{
+    const row=document.createElement('div'); row.className='row';
+    const lab=document.createElement('label'); lab.textContent=key; row.appendChild(lab);
+    if(liveKeys.includes(key)){ const b=document.createElement('span'); b.className='badge live'; b.textContent='live'; row.appendChild(b); }
+    else { const b=document.createElement('span'); b.className='badge'; b.textContent='restart'; row.appendChild(b); }
+    const f=fieldFor(key,orig[key]); f.dataset.key=key; row.appendChild(f);
+    box.appendChild(row);
+  });
+  // gamerules
+  const rb=$('#rules'); rb.innerHTML='';
+  (j.gamerules||[]).forEach(g=>{
+    const row=document.createElement('div'); row.className='row';
+    const lab=document.createElement('label'); lab.textContent=g.rule; row.appendChild(lab);
+    const bdg=document.createElement('span'); bdg.className='badge live'; bdg.textContent='live'; row.appendChild(bdg);
+    if(g.type==='bool'){
+      const cb=document.createElement('input'); cb.type='checkbox';
+      cb.onchange=()=>setGamerule(g.rule, String(cb.checked));
+      row.appendChild(cb);
+    } else {
+      const inp=document.createElement('input'); inp.type='number'; inp.style.minWidth='80px'; inp.value='3';
+      const btn=document.createElement('button'); btn.textContent='Set'; btn.onclick=()=>setGamerule(g.rule, inp.value);
+      row.appendChild(inp); row.appendChild(btn);
+    }
+    rb.appendChild(row);
+  });
+}
+function changedUpdates(){
+  const upd={};
+  $('#props').querySelectorAll('[data-key]').forEach(el=>{
+    const k=el.dataset.key, v=valOf(el);
+    if(v!==String(orig[k])) upd[k]=v;
+  });
+  return upd;
+}
+async function saveProps(restart){
+  const updates=changedUpdates();
+  if(Object.keys(updates).length===0){ toast('No changes'); return; }
+  const r=await fetch('/api/properties',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({updates})});
+  const j=await r.json();
+  toast(`Saved. live: ${j.appliedLive.join(', ')||'none'}; restart: ${j.needsRestart.join(', ')||'none'}`);
+  if(restart) control('restart');
+  loadProps();
+}
+async function setGamerule(rule,value){
+  const r=await fetch('/api/gamerule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rule,value})});
+  if(r.ok) toast(`${rule} = ${value}`); else toast('server not running');
+}
+$('#b-save').onclick=()=>saveProps(false);
+$('#b-save-restart').onclick=()=>saveProps(true);
+$('#b-reload').onclick=loadProps;
+loadProps();
+</script>
+</body>
+</html>

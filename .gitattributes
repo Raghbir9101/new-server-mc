@@ -1,0 +1,16 @@
+# Normalize line endings so Git stops warning about LF/CRLF and the scripts
+# stay LF on Ubuntu (where you'll run them).
+* text=auto eol=lf
+
+# Windows-only launcher keeps CRLF.
+*.bat text eol=crlf
+
+# Binary server data — never touch line endings or diff these.
+*.jar   binary
+*.mca   binary
+*.mcr   binary
+*.dat   binary
+*.dat_old binary
+*.nbt   binary
+*.png   binary
+*.gz    binary

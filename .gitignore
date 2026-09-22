@@ -1,0 +1,24 @@
+# --- Lock files held open by the running server ---
+# These are exclusively locked on Windows and cause: "session.lock: Permission denied".
+# They are throwaway runtime state — never back them up.
+session.lock
+
+# --- Regenerated from the jar on every start / run — not worth backing up ---
+/bundler/
+/cache/
+/logs/
+/crash-reports/
+/debug/
+*.log
+*.log.gz
+hs_err_pid*.log
+
+# --- Local JDK, if you ever extract one inside the repo ---
+/jdk-*/
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+
+# Kept intentionally (NOT ignored): world*/, plugins/, server.properties,
+# eula.txt, ops/whitelist json, the server .jar, and the runner/panel code.
