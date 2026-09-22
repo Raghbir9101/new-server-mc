@@ -13,8 +13,9 @@ session.lock
 *.log.gz
 hs_err_pid*.log
 
-# --- Local JDK, if you ever extract one inside the repo ---
+# --- Auto-installed local JDK (downloaded by server-runner.js) ---
 /jdk-*/
+.jdk-download.tar.gz
 
 # --- OS / editor noise ---
 .DS_Store

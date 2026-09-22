@@ -31,6 +31,7 @@
 
 const { spawn, execFileSync, execSync } = require('child_process');
 const { EventEmitter } = require('events');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
@@ -38,13 +39,15 @@ const path = require('path');
 // Config
 // ---------------------------------------------------------------------------
 const ROOT = __dirname;
-const JAVA_BIN = process.env.JAVA_BIN || 'java';
+let JAVA_BIN = process.env.JAVA_BIN || 'java'; // reassigned if we auto-install a JDK
 const XMX = process.env.XMX || '4G';
 const XMS = process.env.XMS || '2G';
 const MIN_JAVA = parseInt(process.env.MIN_JAVA || '25', 10);
 const COMMIT_INTERVAL_MS = parseInt(process.env.COMMIT_INTERVAL || '60', 10) * 1000;
 const GIT_REMOTE = process.env.GIT_REMOTE || 'origin';
 const AUTO_RESTART = process.env.AUTO_RESTART !== 'false';
+const AUTO_INSTALL_JAVA = process.env.AUTO_INSTALL_JAVA !== 'false'; // auto-download a local JDK if system Java is too old
+const INSTALL_DIR = path.join(ROOT, `jdk-${MIN_JAVA}`);            // where the auto-installed JDK lives (gitignored)
 const FLUSH_WAIT_MS = 1500;
 
 // ---------------------------------------------------------------------------
@@ -92,6 +95,93 @@ function detectJavaMajor() {
   return { major, raw: out.split('\n')[0].trim() };
 }
 
+// Download a URL to a file, following redirects (Adoptium redirects to GitHub releases).
+function download(url, dest, redirects = 6) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(dest);
+    https.get(url, { headers: { 'User-Agent': 'mc-server-runner' } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume(); file.close(); try { fs.unlinkSync(dest); } catch (_) {}
+        if (redirects <= 0) return reject(new Error('too many redirects'));
+        return resolve(download(res.headers.location, dest, redirects - 1));
+      }
+      if (res.statusCode !== 200) { res.resume(); file.close(); try { fs.unlinkSync(dest); } catch (_) {} return reject(new Error(`HTTP ${res.statusCode} for ${url}`)); }
+      res.pipe(file);
+      file.on('finish', () => file.close(() => resolve()));
+    }).on('error', (err) => { try { fs.unlinkSync(dest); } catch (_) {} reject(err); });
+  });
+}
+
+// Find a `.../bin/java` under a directory (used to locate an extracted JDK).
+function findJavaUnder(dir) {
+  if (!fs.existsSync(dir)) return null;
+  const stack = [dir];
+  while (stack.length) {
+    const d = stack.pop();
+    let entries;
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { continue; }
+    for (const e of entries) {
+      const full = path.join(d, e.name);
+      if (e.isDirectory()) stack.push(full);
+      else if ((e.name === 'java' || e.name === 'java.exe') && path.basename(d) === 'bin') return full;
+    }
+  }
+  return null;
+}
+
+// Download + extract a self-contained Temurin JDK into INSTALL_DIR; return the java binary path.
+async function installJava() {
+  const archMap = { x64: 'x64', arm64: 'aarch64' };
+  const osMap = { linux: 'linux', darwin: 'mac' };
+  const arch = archMap[process.arch];
+  const osname = osMap[process.platform];
+  if (!arch || !osname) {
+    throw new Error(`Auto-install not supported on ${process.platform}/${process.arch}. Set JAVA_BIN to a Java ${MIN_JAVA} binary.`);
+  }
+  const url = `https://api.adoptium.net/v3/binary/latest/${MIN_JAVA}/ga/${osname}/${arch}/jdk/hotspot/normal/eclipse`;
+  const tmp = path.join(ROOT, '.jdk-download.tar.gz');
+  log(`Auto-installing Temurin JDK ${MIN_JAVA} (${osname}/${arch}) — this is a one-time ~150 MB download...`);
+  await download(url, tmp);
+  log('Download complete, extracting...');
+  fs.rmSync(INSTALL_DIR, { recursive: true, force: true });
+  fs.mkdirSync(INSTALL_DIR, { recursive: true });
+  execFileSync('tar', ['-xzf', tmp, '-C', INSTALL_DIR], { stdio: 'ignore' });
+  try { fs.unlinkSync(tmp); } catch (_) {}
+  const bin = findJavaUnder(INSTALL_DIR);
+  if (!bin) throw new Error('Extracted the JDK but could not find bin/java inside it.');
+  try { fs.chmodSync(bin, 0o755); } catch (_) {}
+  return bin;
+}
+
+// Ensure a Java >= MIN_JAVA is available; reuse a prior local install, else auto-install. Returns {major,raw} or null.
+async function ensureJava() {
+  let jv = detectJavaMajor();
+  if (jv && jv.major >= MIN_JAVA) return jv;
+
+  // Reuse a JDK we installed on a previous run.
+  const localBin = findJavaUnder(INSTALL_DIR);
+  if (localBin) {
+    JAVA_BIN = localBin;
+    jv = detectJavaMajor();
+    if (jv && jv.major >= MIN_JAVA) { log(`Using previously installed JDK: ${JAVA_BIN}`); return jv; }
+  }
+
+  if (!AUTO_INSTALL_JAVA) return jv; // caller reports the problem
+
+  const found = jv ? `Java ${jv.major}` : 'no Java';
+  warn(`${found} present, but Java ${MIN_JAVA}+ is required — installing it automatically...`);
+  try {
+    JAVA_BIN = await installJava();
+    jv = detectJavaMajor();
+    if (jv && jv.major >= MIN_JAVA) { log(`Installed Java ${jv.major}: ${JAVA_BIN}`); return jv; }
+    warn('Auto-install finished but the JDK still is not usable.');
+    return jv;
+  } catch (e) {
+    warn(`Auto-install failed: ${e.message}`);
+    return jv;
+  }
+}
+
 function findServerJar() {
   if (process.env.SERVER_JAR) return process.env.SERVER_JAR;
   const preferred = 'spigot-26.1.2.jar';
@@ -100,7 +190,7 @@ function findServerJar() {
   return jars[0] || null;
 }
 
-function preflight() {
+async function preflight() {
   log('Running preflight checks...');
   log(`  ✓ Node ${process.version}`);
 
@@ -108,20 +198,18 @@ function preflight() {
   if (!gv.ok) fail('git is not installed. On Ubuntu: sudo apt update && sudo apt install -y git');
   log(`  ✓ ${gv.out.trim()}`);
 
-  const jv = detectJavaMajor();
-  if (!jv) {
+  const jv = await ensureJava();
+  if (!jv || jv.major < MIN_JAVA) {
     fail(
-      `Java not found (looked for "${JAVA_BIN}").\n` +
-      `  This server needs Java ${MIN_JAVA}. Install Temurin ${MIN_JAVA} on Ubuntu:\n` +
-      `    sudo apt install -y wget apt-transport-https gpg\n` +
-      `    wget -qO- https://packages.adoptium.net/artifactory/api/gpg/key/public | sudo gpg --dearmor -o /etc/apt/keyrings/adoptium.gpg\n` +
-      `    echo "deb [signed-by=/etc/apt/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb $(. /etc/os-release && echo $VERSION_CODENAME) main" | sudo tee /etc/apt/sources.list.d/adoptium.list\n` +
-      `    sudo apt update && sudo apt install -y temurin-${MIN_JAVA}-jdk\n` +
-      `  Or point at a JDK: JAVA_BIN=/path/to/jdk-${MIN_JAVA}/bin/java node server-runner.js`
+      `Could not obtain Java ${MIN_JAVA} (found: ${jv ? 'Java ' + jv.major : 'none'}).\n` +
+      `  Auto-install ${AUTO_INSTALL_JAVA ? 'was attempted but failed (check network / that "tar" is installed)' : 'is disabled (AUTO_INSTALL_JAVA=false)'}.\n` +
+      `  Fix options:\n` +
+      `    • Ensure the box has internet + tar, then restart — it will retry the download.\n` +
+      `    • Or install Temurin ${MIN_JAVA}: sudo apt install -y temurin-${MIN_JAVA}-jdk (via the Adoptium apt repo)\n` +
+      `    • Or point at an existing JDK: JAVA_BIN=/path/to/jdk-${MIN_JAVA}/bin/java`
     );
   }
-  if (jv.major < MIN_JAVA) fail(`Java ${jv.major} found ("${jv.raw}"), but this build requires Java ${MIN_JAVA}+.`);
-  log(`  ✓ Java ${jv.major} ("${jv.raw}")`);
+  log(`  ✓ Java ${jv.major} ("${jv.raw}")  [${JAVA_BIN}]`);
 
   const jar = findServerJar();
   if (!jar || !fs.existsSync(path.join(ROOT, jar))) fail(`No server jar found in ${ROOT}. Set SERVER_JAR=<file>.jar`);
@@ -323,9 +411,9 @@ async function shutdown(signal) {
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
-function main() {
+async function main() {
   process.chdir(ROOT);
-  cfg = preflight();
+  cfg = await preflight();
   startServer();
   commitTimer = setInterval(commitTick, COMMIT_INTERVAL_MS);
   log(`Auto-commit every ${COMMIT_INTERVAL_MS / 1000}s scheduled.`);
@@ -356,6 +444,12 @@ function main() {
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+  // Safety net: never leave the server child orphaned (holding port 25565) if we exit.
+  process.on('exit', () => {
+    if (server && server.exitCode === null) {
+      try { process.kill(-server.pid, 'SIGKILL'); } catch (_) { try { server.kill('SIGKILL'); } catch (__) {} }
+    }
+  });
 }
 
-main();
+main().catch((e) => fail(e && e.stack ? e.stack : String(e)));
