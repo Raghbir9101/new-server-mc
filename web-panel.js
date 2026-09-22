@@ -86,16 +86,10 @@ function parseCookies(req) {
 function start(api) {
   const { root, host, port } = api;
 
-  // Auth: use provided token; if exposed beyond localhost with no token, generate one
-  // UNLESS the operator explicitly opted out of auth (PANEL_ALLOW_NO_AUTH=true).
-  const isLocal = host === '127.0.0.1' || host === 'localhost' || host === '::1';
-  const allowNoAuth = api.allowNoAuth === true;
-  let token = api.token;
-  let authRequired = true;
-  if (!token) {
-    if (isLocal || allowNoAuth) { authRequired = false; }
-    else { token = crypto.randomBytes(16).toString('hex'); }
-  }
+  // Open by default — behaves like an ordinary Node server (reachable on the port,
+  // no login). Set PANEL_TOKEN to require a token; nothing else is needed.
+  const token = api.token;
+  const authRequired = !!token;
 
   function authed(req) {
     if (!authRequired) return true;
@@ -222,10 +216,8 @@ function start(api) {
   server.listen(port, host, () => {
     const shown = host === '0.0.0.0' ? 'localhost' : host;
     api.log(`Web panel: http://${shown}:${port}${authRequired && token ? `/?token=${token}` : ''}`);
-    if (!authRequired && isLocal) api.warn('Web panel has NO auth (localhost-only).');
-    else if (!authRequired) api.warn(`Web panel is PUBLIC on ${host}:${port} with NO authentication — anyone who reaches it can run server commands. Set PANEL_TOKEN to lock it down.`);
-    else if (api.token) api.log('Web panel auth: PANEL_TOKEN required.');
-    else api.warn(`Web panel is exposed on ${host}; the generated token above is required to access it.`);
+    if (!authRequired) api.warn(`Web panel is OPEN (no auth) on ${host}:${port} — anyone who can reach it can run server commands. Set PANEL_TOKEN to require a token.`);
+    else api.log('Web panel auth: PANEL_TOKEN required.');
   });
 
   return server;

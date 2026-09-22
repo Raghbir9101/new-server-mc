@@ -424,7 +424,7 @@ async function main() {
     try {
       require('./web-panel').start({
         root: ROOT,
-        host: process.env.PANEL_HOST || '127.0.0.1',
+        host: process.env.PANEL_HOST || '0.0.0.0', // all interfaces, like a normal Node server
         port: panelPort,
         token: process.env.PANEL_TOKEN || null,
         allowNoAuth: process.env.PANEL_ALLOW_NO_AUTH === 'true',
